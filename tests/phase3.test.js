@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {durableClass,durableClient,FxBudgetCoordinator} from '../workers/durable-coordinator.js';
 import {createAccessAuthorizer} from '../workers/access-auth.js';
-import {createWorker} from '../workers/fx-compass-api.js';
+import {createWorker,normalizeTwelveData} from '../workers/fx-compass-api.js';
 import {MockDurableStorage} from '../test-support/durable-storage.js';
 import {ohlcFixture,MOCK_NOW} from '../test-support/ohlc-fixtures.js';
 const env={PUBLIC_OHLC_ENABLED:'true',LICENSE_APPROVED:'true',MINUTE_BUDGET:'10',DAY_BUDGET:'10'};
