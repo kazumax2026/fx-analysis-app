@@ -1,0 +1,44 @@
+# fx-compass-apiのWorkers実装（デプロイ未実施）
+
+`fx-compass-api.js` は `docs/workers-ohlc-contract.md` に対応する新規Workerエントリーです。既存のCloudflare Workersを置き換えたり、既存の価格/SMAエンドポイントを変更したりしていません。既存Workerへ統合する際は、そのコードのルーティングを別途確認してください。
+
+## 実装済み
+
+- GET /v1/candles?pair=USDJPY&timeframe=5m。3通貨のみ、未知・重複パラメーターを拒否
+- Twelve Data time_seriesへ5min・UTC・302本でリクエスト。キーはenv.TWELVE_DATA_API_KEY（Workers Secret）から読み、Authorizationヘッダーに載せる。URL、応答、ログにキーを含めない
+- 上流メタデータの通貨・時間足・UTC確認、厳密な日時と価格変換、OHLC整合性・重複検証
+- 足の終了＋15秒の反映待ちを満たす足のみ確定扱い。300本を目標、34本未満はエラー
+- 契約に沿った昇順OHLC・取得時刻・更新期限。市場状態と配信遅延は不明とし、最新確定足の終了が10分超古い場合は保守的にstale=true
+- 初期状態は公開取得無効。PUBLIC_OHLC_ENABLEDとLICENSE_APPROVEDの両方が文字列trueでなければ403
+- 認証と全体予算のアダプターが未設定なら503で取得を停止。標準エクスポートにはどちらも未設定
+- CORSはALLOWED_ORIGINと完全一致したOriginのみ。CORS自体を認証として使わない
+- Cloudflare Cache API用の通貨別キャッシュ。次の5分境界＋15秒まで新鮮とし、履歴は最大1時間保持。HTTPクライアントのキャッシュはno-store
+- 同一Workerインスタンス内で同じ通貨の並行取得を共有。キャッシュヒットでは上流予算を消費しない
+- Workerインスタンス内のIP別毎分制限（既定30回）。ローカル管理するIPの件数にも上限
+- 上流更新の5xx失敗時に、保持期間内の前回データを元の時刻のままstale=trueで返す。利用上限429ではRetry-Afterを返す
+- HTTPエラー、HTTP 200の上流本文エラー、不正JSON、10秒タイムアウト、秘密情報を含まない日本語エラー
+
+## 未実装・未検証（本番有効化の前提）
+
+1. **本番の認証**：Cloudflare Accessの署名・発行者・audience等の検証、または別の認証方式。CORSや未検証のヘッダーは認証にならない。
+2. **全地域で共有する利用上限**：Durable Objects等による原子的なクレジット消費・分/日予算。IP別ローカルカウンターと同時取得抑制はインスタンスをまたいで共有されず、再起動で消える。
+3. **グローバルなキャッシュ・同時取得抑制**：Cache APIは地域ごと。複数拠点の取得集中を防ぐ仕組みは未実装。
+4. **取引カレンダーと配信遅延**：週末・祝日・既知の遅延を踏まえた判定。現在の10分ルールは保守的な仮設定であり、休場と障害を識別しない。
+5. **Twelve Dataの契約確認**：公開表示・再配布・キャッシュと保存・帰属表示・302本取得の許可・クレジット料金。公開取得は承認まで無効。
+6. **Cloudflare実環境の検証**：Secret設定、CORS、Cache API、実際のTwelve Data応答メタデータ、Authorizationヘッダー認証、Safariとの接続。今回は合成JSONだけで検証。
+7. 既存Workerの価格/SMAエンドポイントとの統合、4つの追加時間足、Cronによる定期取得、運用監視。
+
+## アダプター契約
+
+`createWorker({authorize, consumeBudget})` で接続します。
+
+- authorize(request, env)：検証済み利用者に限り真偽値true。認証未設定・失敗時は許可しない。
+- consumeBudget({pair, timeframe, env})：上流取得を始める前に原子的に予算を予約し、`{allowed: true}` または `{allowed: false, retryAfter: 秒数}` を返す。Twelve Dataの実際のクレジット体系をサーバー側で反映する。取得失敗も無条件で返金しない。
+
+モックテストだけで常時許可アダプターを使います。標準エントリーはこれらを設定していないため、フラグだけ変更してもデータ取得を開始しません。本番では認証と予算管理の実装が必要です。
+
+## 検証
+
+リポジトリルートで `npm test`。`tests/workers.test.js` は合成OHLCとモック通信・キャッシュ・認証・予算アダプターを使用します。実APIキー、Twelve Data通信、Cloudflareへのデプロイは不要です。
+
+デプロイ用設定や自動公開ワークフローは今回追加していません。既存のPagesワークフローはWorkersファイルを公開対象に含めません。画面とPages用コードは変更していません。
