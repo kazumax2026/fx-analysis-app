@@ -27,7 +27,7 @@ jobs:
         run: |
           mkdir -p _site/src
           cp index.html styles.css _site/
-          cp src/app.js src/analysis.js _site/src/
+          cp src/app.js src/analysis.js src/data-source.js _site/src/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

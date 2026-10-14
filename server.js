@@ -6,7 +6,7 @@ http.createServer(async(req,res)=>{
   try {
     const url=new URL(req.url,'http://localhost');
     const file=path.resolve(root,'.'+decodeURIComponent(url.pathname==='/'?'/index.html':url.pathname));
-    const allowed=['index.html','styles.css','src/app.js','src/analysis.js'];
+    const allowed=['index.html','styles.css','src/app.js','src/analysis.js','src/data-source.js'];
     if(!allowed.includes(path.relative(root,file))){res.writeHead(404);return res.end('Not found');}
     const body=await readFile(file);
     res.writeHead(200,{'Content-Type':file.endsWith('.css')?'text/css':file.endsWith('.js')?'text/javascript':'text/html; charset=utf-8'});res.end(body);

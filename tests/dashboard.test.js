@@ -5,7 +5,7 @@ test('3通貨×5時間足の操作で選択・チャート・数値・判定理�
  const ids=new Map();const make=(key,value)=>({dataset:{[key]:value},attrs:{},setAttribute(k,v){this.attrs[k]=v;},addEventListener(_,fn){this.click=fn;}});
  const pairs=['USD/JPY','EUR/JPY','GBP/JPY'].map(p=>make('pair',p));
  const frames=Object.keys(TIMEFRAMES).map(tf=>make('timeframe',tf));
- globalThis.document={getElementById(id){if(!ids.has(id))ids.set(id,{});return ids.get(id);},querySelectorAll(selector){return selector==='[data-pair]'?pairs:frames;}};
+ globalThis.document={getElementById(id){if(!ids.has(id))ids.set(id,{setAttribute(){},addEventListener(){}});return ids.get(id);},querySelectorAll(selector){return selector==='[data-pair]'?pairs:frames;}};
  try{
   await import('../src/app.js');assert.equal(frames.find(b=>b.dataset.timeframe==='1h').attrs['aria-pressed'],'true');
   for(const pair of pairs){pair.click();for(const frame of frames){frame.click();const data=sampleData(pair.dataset.pair,frame.dataset.timeframe),a=analyze(data);
