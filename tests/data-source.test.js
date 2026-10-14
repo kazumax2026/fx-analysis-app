@@ -38,3 +38,7 @@ test('通貨切替後の遅い応答とサンプル復帰後の応答は無視',
  feed.select('USD/JPY','5m','live');feed.select('EUR/JPY','5m','live');resolvers[0]();await settle();assert.equal(feed.snapshot().data,null);resolvers[1]();await settle();assert.equal(feed.snapshot().pair,'EUR/JPY');assert.equal(feed.snapshot().status,'ready');
  void feed.refresh();feed.select('EUR/JPY','5m','sample');resolvers[2]();await settle();assert.equal(feed.snapshot().mode,'sample');assert.equal(feed.snapshot().data,null);
 });
+test('Workersのデータ不足コードは日本語に変換し任意のエラー本文は表示しない',async()=>{
+ await assert.rejects(fetchCandles('USD/JPY',{config:CONFIG,fetchImpl:async()=>({ok:false,status:502,json:async()=>({error:{code:'INSUFFICIENT_DATA',message:'private detail'}})})}),e=>e.code==='INSUFFICIENT'&&e.message.includes('データ不足')&&!e.message.includes('private'));
+ await assert.rejects(fetchCandles('USD/JPY',{config:CONFIG,fetchImpl:async()=>({ok:false,status:502,json:async()=>({error:{code:'UNKNOWN',message:'private detail'}})})}),e=>e.code==='HTTP'&&!e.message.includes('private'));
+});

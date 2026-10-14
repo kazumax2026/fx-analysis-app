@@ -27,7 +27,12 @@ export async function fetchCandles(pair,{config=LIVE_CONFIG,fetchImpl=globalThis
   let timedOut=false;const timer=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);
   try{
     const response=await fetchImpl(url,{method:'GET',signal:controller.signal,credentials:'omit',cache:'no-store',headers:{Accept:'application/json'}});
-    if(!response.ok)throw new DataError('HTTP',response.status===429?'取得エラー：利用回数の上限です。時間をおいて再試行してください。':response.status===401||response.status===403?'取得エラー：APIへのアクセスが許可されていません。':'取得エラー：データ配信サービスに接続できません。');
+    if(!response.ok){
+      // Only interpret known codes. Never display arbitrary upstream error text.
+      let code;try{code=(await response.json())?.error?.code;}catch{}
+      if(code==='INSUFFICIENT_DATA')throw new DataError('INSUFFICIENT','データ不足：判定には確定した5分足が34本以上必要です。');
+      throw new DataError('HTTP',response.status===429?'取得エラー：利用回数の上限です。時間をおいて再試行してください。':response.status===401||response.status===403?'取得エラー：APIへのアクセスが許可されていません。':'取得エラー：データ配信サービスに接続できません。');
+    }
     let body;try{body=await response.json();}catch{throw new DataError('INVALID','取得エラー：JSONを読み取れませんでした。');}
     return normalizeResponse(body,pair,now());
   }catch(error){if(signal?.aborted)throw new DataError('CANCELLED','取得を中止しました。');if(error instanceof DataError)throw error;throw new DataError('NETWORK',timedOut?'取得エラー：通信がタイムアウトしました。':'取得エラー：通信に失敗しました。');}
@@ -46,7 +51,7 @@ export function createFeed({config=LIVE_CONFIG,fetcher=fetchCandles,onChange=()=
     try{
       const result=await fetcher(state.pair,{config,signal:controller.signal,now});
       if(ticket!==revision)return;
-      cache.set(key(),result);state.data=result;state.status=result.stale?'stopped':'ready';state.message=result.stale?'更新停止：取得データの更新期限が過ぎています。':'実データ（Twelve Data・確定5分足）';
+      cache.set(key(),result);state.data=result;state.status=result.stale?'stopped':'ready';state.message=result.stale?'更新停止：データが古い、または更新期限が過ぎています。':'実データ（Twelve Data・確定5分足）';
     }catch(error){if(ticket!==revision)return;state.data=cache.get(key())||null;state.status=state.data?'stopped':'error';state.message=(state.data?'更新停止：前回取得データを表示しています。 ':'')+(error instanceof DataError?error.message:'取得エラー：通信に失敗しました。');}
     emit();
   }
