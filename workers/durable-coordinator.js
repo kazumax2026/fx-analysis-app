@@ -1,5 +1,6 @@
 import {createCoordinator,CoordinationError} from './coordinator.js';
 import {normalizeTwelveData} from './fx-compass-api.js';
+import {normalizeResponse} from '../src/data-source.js';
 const PAIRS={USDJPY:'USD/JPY',EURJPY:'EUR/JPY',GBPJPY:'GBP/JPY'};
 const STORAGE_KEY='fx-budget-state-v1';
 /** Cloudflare storage adapter: network I/O stays outside the atomic transaction. */
@@ -38,15 +39,22 @@ export function durableClass({mockSource=null,now=Date.now,timeoutMs=10000}={}){
 }
 export const FxBudgetCoordinator=durableClass();
 /** Every region/pair must resolve to this SAME object in a shared namespace. */
-export function durableClient(binding){
+export function durableClient(binding,{timeoutMs=15000,now=Date.now}={}){
+ if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1)throw Error('Invalid timeout');
  return {ownsUpstream:true,async get(key){
   if(!['USDJPY:5m','EURJPY:5m','GBPJPY:5m'].includes(key))throw new CoordinationError(400,'INVALID_KEY','取得条件が不正です。');
-  try{
+  const controller=new AbortController();let timer;
+  const operation=async()=>{
    const stub=binding.get(binding.idFromName('fx-compass-primary-budget-v1'));
-   const response=await stub.fetch(`https://coordinator.internal/internal/candles?pair=${key.split(':')[0]}&timeframe=5m`);
+   const response=await stub.fetch(`https://coordinator.internal/internal/candles?pair=${key.split(':')[0]}&timeframe=5m`,{signal:controller.signal});
    const body=await response.json();
    if(!response.ok){const codes=['GLOBAL_LIMIT','BUDGET_UNAVAILABLE','DISABLED','SOURCE_NOT_CONFIGURED','UPSTREAM_TIMEOUT','MOCK_NETWORK','INSUFFICIENT_DATA','INVALID_UPSTREAM','COOLDOWN'];const code=codes.includes(body?.error?.code)?body.error.code:'BUDGET_UNAVAILABLE';const retry=Number(response.headers.get('Retry-After'));throw new CoordinationError(response.status,code,'共有予算管理が取得を拒否しました。',Number.isFinite(retry)?Math.min(86400,Math.max(0,retry)):0);}
-   return body;
-  }catch(e){if(e instanceof CoordinationError)throw e;throw new CoordinationError(503,'BUDGET_UNAVAILABLE','共有予算管理へ接続できません。');}
+   // Validate even cached responses; never trust a malformed success body.
+   let checked;try{checked=normalizeResponse(body,PAIRS[key.split(':')[0]],now());}catch{throw new CoordinationError(503,'INVALID_RESPONSE','共有管理先の応答が不正です。');}
+   return {...body,stale:checked.stale};
+  };
+  try{return await Promise.race([operation(),new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new CoordinationError(504,'COORDINATOR_TIMEOUT','共有管理先の応答がタイムアウトしました。'));},timeoutMs);})]);}
+  catch(e){if(e instanceof CoordinationError)throw e;throw new CoordinationError(503,'BUDGET_UNAVAILABLE','共有予算管理へ接続できません。');}
+  finally{clearTimeout(timer);}
  }};
 }
