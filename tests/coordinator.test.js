@@ -44,7 +44,7 @@ test('永続ストアを別Nodeプロセスで再読込して予約保持を確�
  const result=spawnSync(process.execPath,['--input-type=module','-e',code],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
 });
 test('取得途中の再起動：永続予約の期限まで再取得せず期限後も旧消費を保持',async t=>{
- const x=await setup(t,{timeoutMs:20});await x.store.transaction(s=>{s.version=1;s.sequence=1;s.day={period:Math.floor(MOCK_NOW/86400000),used:1};s.minute={period:Math.floor(MOCK_NOW/60000),used:1};s.entries={'USDJPY:5m':{lease:{token:1,until:MOCK_NOW+100}}};});
+ const x=await setup(t,{timeoutMs:20});await x.store.transaction(s=>{s.version=1;s.sequence=1;s.lastTime=MOCK_NOW;s.day={period:Math.floor(MOCK_NOW/86400000),used:1};s.minute={period:Math.floor(MOCK_NOW/60000),used:1};s.entries={'USDJPY:5m':{lease:{token:1,until:MOCK_NOW+100}}};});
  let calls=0;const coordinator=createCoordinator({...x.config,store:new FileStore(x.path)});
  const pending=coordinator.get('USDJPY:5m',async()=>{calls++;return normalizeTwelveData(ohlcFixture(),'USD/JPY',MOCK_NOW);});await new Promise(r=>setTimeout(r,10));assert.equal(calls,0);x.setTime(MOCK_NOW+101);await pending;assert.equal(calls,1);assert.equal((await coordinator.inspect()).day.used,2);
 });
@@ -81,4 +81,26 @@ test('別通貨の並行予約も共通予算で原子的に制限し、設定�
  const load=async()=>{calls++;return normalizeTwelveData(ohlcFixture(),'USD/JPY',MOCK_NOW);};
  const outcomes=await Promise.allSettled([x.coordinator.get('USDJPY:5m',load),createCoordinator({...x.config,store:new FileStore(x.path)}).get('EURJPY:5m',load)]);
  assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1);assert.equal(outcomes.filter(r=>r.status==='rejected'&&r.reason.status===429).length,1);assert.equal(calls,1);assert.equal((await x.coordinator.inspect()).day.used,2);
+});
+test('日次上限1：保存済みカウンター欠落・破損を503で拒否し二回目を取得しない',async t=>{
+ const mutations=[s=>delete s.day,s=>delete s.minute,s=>s.day=null,s=>s.minute=null,s=>s.day.used=-1,s=>delete s.minute.used,s=>s.day.used='0',s=>s.minute.period=NaN,s=>delete s.version,s=>delete s.sequence,s=>delete s.lastTime];
+ for(const mutate of mutations){
+  const x=await setup(t,{dayLimit:1});let calls=0;const source=async({symbol})=>{calls++;return ohlcFixture('normal',symbol);};const w=worker(x.coordinator,source);
+  assert.equal((await w.fetch(req(),env)).status,200);assert.equal(calls,1);
+  await x.store.transaction(mutate);
+  const saved=await x.store.transaction(s=>s);
+  assert.equal((await w.fetch(req('EURJPY'),env)).status,503);assert.equal(calls,1);
+  // Damage is not repaired by silently resetting counters.
+  assert.deepEqual(await x.store.transaction(s=>s),saved);
+  // A fresh cache must not bypass corrupt budget state either.
+  assert.equal((await w.fetch(req(),env)).status,503);assert.equal(calls,1);
+ }
+});
+test('完全な空状態だけを初期化し、部分的な初期状態は拒否する',async t=>{
+ const x=await setup(t,{dayLimit:1});assert.deepEqual(await x.coordinator.inspect(),{});
+ let calls=0;await x.coordinator.get('USDJPY:5m',async()=>{calls++;return normalizeTwelveData(ohlcFixture(),'USD/JPY',MOCK_NOW);});
+ const state=await x.coordinator.inspect();assert.equal(state.day.used,1);assert.equal(state.minute.used,1);
+ await assert.rejects(x.coordinator.get('EURJPY:5m',async()=>{calls++;}),e=>e.status===429);assert.equal(calls,1);
+ const partial=await setup(t);await partial.store.transaction(s=>{s.version=1;});
+ await assert.rejects(partial.coordinator.get('USDJPY:5m',async()=>{calls++;}),e=>e.code==='BUDGET_UNAVAILABLE');assert.equal(calls,1);
 });

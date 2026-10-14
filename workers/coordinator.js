@@ -6,17 +6,26 @@ const unavailable=()=>new CoordinationError(503,'BUDGET_UNAVAILABLE','予算管�
 export function createCoordinator({store,now=Date.now,minuteLimit=0,dayLimit=0,cost=1,timeoutMs=10000,cooldownMs=1000}={}){
   for(const n of [minuteLimit,dayLimit,cost,timeoutMs,cooldownMs])if(!Number.isSafeInteger(n)||n<0)throw Error('Invalid coordinator configuration');
   if(!cost||!timeoutMs)throw Error('Invalid coordinator configuration');
-  async function tx(fn){try{if(!store?.transaction)throw Error();return await store.transaction(fn);}catch(e){if(e instanceof CoordinationError)throw e;throw unavailable();}}
+  function validateSavedState(s){
+    if(!s||typeof s!=='object'||Array.isArray(s))throw unavailable();
+    // Only an entirely empty object is a new store. Partial records are corruption.
+    if(Object.keys(s).length===0)return;
+    if(s.version!==1||!Number.isSafeInteger(s.sequence)||s.sequence<0||!Number.isSafeInteger(s.lastTime)||s.lastTime<0||!s.entries||typeof s.entries!=='object'||Array.isArray(s.entries))throw unavailable();
+    for(const bucket of [s.minute,s.day]){
+      if(!bucket||typeof bucket!=='object'||!Number.isSafeInteger(bucket.period)||bucket.period<0||!Number.isSafeInteger(bucket.used)||bucket.used<0)throw unavailable();
+    }
+    if(s.minute.period>Math.floor(s.lastTime/60000)||s.day.period>Math.floor(s.lastTime/86400000))throw unavailable();
+  }
+  async function tx(fn){try{if(!store?.transaction)throw Error();return await store.transaction(s=>{validateSavedState(s);return fn(s);});}catch(e){if(e instanceof CoordinationError)throw e;throw unavailable();}}
   async function get(key,loader){
     if(!['USDJPY:5m','EURJPY:5m','GBPJPY:5m'].includes(key))throw new CoordinationError(400,'INVALID_KEY','未対応の取得条件です。');
     const deadline=Date.now()+timeoutMs+2000;
     while(true){
       const action=await tx(s=>{
-        if(!s||typeof s!=='object'||Array.isArray(s))throw unavailable();
-        s.version??=1;if(s.version!==1)throw unavailable();s.entries??={};s.sequence??=0;
-        if(!Number.isSafeInteger(s.sequence)||s.sequence<0||!s.entries||typeof s.entries!=='object'||Array.isArray(s.entries))throw unavailable();
-        for(const bucket of [s.minute,s.day])if(bucket&&(!Number.isSafeInteger(bucket.period)||!Number.isSafeInteger(bucket.used)||bucket.used<0))throw unavailable();
-        const t=now(),minute=Math.floor(t/60000),day=Math.floor(t/86400000),entry=s.entries[key]??={};
+        const t=now();if(!Number.isSafeInteger(t)||t<0)throw unavailable();
+        const minute=Math.floor(t/60000),day=Math.floor(t/86400000);
+        if(Object.keys(s).length===0)Object.assign(s,{version:1,entries:{},sequence:0,lastTime:t,minute:{period:minute,used:0},day:{period:day,used:0}});
+        const entry=s.entries[key]??={};
         if(s.lastTime!==undefined&&t<s.lastTime)throw unavailable();s.lastTime=t;
         if(entry.data&&!entry.data.stale&&t<entry.data.expiresAt)return {type:'cache',data:entry.data};
         if(entry.lease&&t<entry.lease.until)return {type:'wait'};
