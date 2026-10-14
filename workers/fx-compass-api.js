@@ -88,7 +88,7 @@ export function createWorker({coordinator=null,mockSource=null,fetchImpl=globalT
       if(!clients.has(ip)&&clients.size>=10000)throw new ApiError(429,'LOCAL_LIMIT','利用上限です。時間をおいて再試行してください。',60);
       const entry=clients.get(ip)||{minute,count:0};entry.count++;clients.set(ip,entry);
       if(entry.count>perIpLimit)throw new ApiError(429,'LOCAL_LIMIT','利用回数の上限です。時間をおいて再試行してください。',60);
-      if(!mockSource&&(typeof env.TWELVE_DATA_API_KEY!=='string'||!env.TWELVE_DATA_API_KEY.trim()))throw new ApiError(503,'SECRET_NOT_CONFIGURED','配信サービスの認証設定がありません。');
+      if(!mockSource&&!coordinator?.ownsUpstream&&(typeof env.TWELVE_DATA_API_KEY!=='string'||!env.TWELVE_DATA_API_KEY.trim()))throw new ApiError(503,'SECRET_NOT_CONFIGURED','配信サービスの認証設定がありません。');
       const cached=coordinator?null:await readCache(pair);
       const usable=cached&&cached.schemaVersion===1&&cached.pair===SYMBOLS[pair]&&Array.isArray(cached.candles)&&now()-cached.fetchedAt<RETAIN*1000;
       if(usable&&!cached.stale&&now()<cached.expiresAt)return json(cached,200,cors);
