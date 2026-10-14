@@ -95,3 +95,35 @@ test('クライアントのタイムアウト後も予約保持、DO完了・再
  await new Promise(r=>setTimeout(r,35));assert.equal(x.storage.data.get('fx-budget-state-v1').day.used,1);
  x.restart();await durableClient(x.binding,{now:()=>MOCK_NOW}).get('USDJPY:5m');assert.equal(x.storage.data.get('fx-budget-state-v1').day.used,1);
 });
+test('初回状態とマーカーを原子的に保存し、日次上限1の二回目を拒否',async()=>{
+ const storage=new MockDurableStorage();let calls=0;
+ const Class=durableClass({now:()=>MOCK_NOW,mockSource:async({symbol})=>{calls++;return ohlcFixture('normal',symbol);}});
+ const instance=new Class({storage},{...env,DAY_BUDGET:'1'});
+ const r=pair=>new Request(`https://internal/internal/candles?pair=${pair}&timeframe=5m`);
+ assert.equal((await instance.fetch(r('USDJPY'))).status,200);assert.equal(storage.data.get('fx-budget-initialized-v1'),1);assert.equal(storage.data.get('fx-budget-state-v1').day.used,1);
+ assert.equal((await instance.fetch(r('EURJPY'))).status,429);assert.equal(calls,1);
+ storage.data.delete('fx-budget-state-v1');assert.equal((await new Class({storage},{...env,DAY_BUDGET:'1'}).fetch(r('EURJPY'))).status,503);assert.equal(calls,1);assert.equal(storage.data.has('fx-budget-state-v1'),false);assert.equal(storage.data.get('fx-budget-initialized-v1'),1);
+});
+test('マーカー欠落・破損・旧状態だけの保存は503で拒否し使用量を戻さない',async()=>{
+ for(const damage of [s=>s.data.delete('fx-budget-initialized-v1'),s=>s.data.set('fx-budget-initialized-v1',0),s=>s.data.set('fx-budget-state-v1',{}),s=>s.data.set('fx-budget-state-v1',null),s=>delete s.data.get('fx-budget-state-v1').minute]){
+  const x=setup();const client=durableClient(x.binding,{now:()=>MOCK_NOW});await client.get('USDJPY:5m');damage(x.storage);const snapshot=structuredClone(x.storage.data);x.restart();await assert.rejects(client.get('EURJPY:5m'),e=>e.status===503);assert.equal(x.calls,1);assert.deepEqual(x.storage.data,snapshot);
+ }
+});
+test('初期化トランザクション途中の保存障害では状態・マーカーが片方だけ残らない',async()=>{
+ const storage=new MockDurableStorage();let calls=0,writes=0;
+ const faulty={transaction:fn=>storage.transaction(tx=>fn({...tx,put:async(key,value)=>{await tx.put(key,value);if(++writes===2)throw Error('write failure');}}))};
+ const Class=durableClass({now:()=>MOCK_NOW,mockSource:async()=>{calls++;return ohlcFixture();}});
+ const r=new Request('https://internal/internal/candles?pair=USDJPY&timeframe=5m');
+ assert.equal((await new Class({storage:faulty},env).fetch(r)).status,503);assert.equal(storage.data.size,0);assert.equal(calls,0);
+ assert.equal((await new Class({storage},env).fetch(r)).status,200);assert.equal(calls,1);assert.equal(storage.data.get('fx-budget-state-v1').day.used,1);assert.equal(storage.data.get('fx-budget-initialized-v1'),1);
+});
+test('DOとクライアントは許可フィールドだけ返し、トップレベル・各足の内部項目を除外',async()=>{
+ const x=setup();const client=durableClient(x.binding,{now:()=>MOCK_NOW});await client.get('USDJPY:5m');
+ const data=x.storage.data.get('fx-budget-state-v1').entries['USDJPY:5m'].data;
+ Object.assign(data,{authorization:'mock-canary',debug:{used:99},unexpected:true});data.candles[0].token='mock-canary';
+ const output=await client.get('USDJPY:5m');const allowed=['schemaVersion','source','pair','timeframe','fetchedAt','expiresAt','stale','marketStatus','delaySeconds','candles'];
+ assert.deepEqual(Object.keys(output).sort(),allowed.sort());assert.deepEqual(Object.keys(output.candles[0]).sort(),['time','open','high','low','close','complete'].sort());assert.ok(!JSON.stringify(output).includes('mock-canary'));
+ // Also verify the client independently against an unsanitized successful binding response.
+ const binding={idFromName:()=>'',get:()=>({fetch:async()=>Response.json(data)})};
+ const sanitized=await durableClient(binding,{now:()=>MOCK_NOW}).get('USDJPY:5m');assert.deepEqual(sanitized,output);assert.equal(x.calls,1);
+});
